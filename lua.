@@ -1,0 +1,577 @@
+-- Savannah Life | Simba Falls Smart Stop & Search Loop (Food <-> Water)
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+local player = Players.LocalPlayer
+local survivalEnabled = false
+local unlocked = false
+local SECRET_KEY = "SIMBA2026"
+
+local WATER_POINT = Vector3.new(-4615.3, 229.4, -281.7)
+local GRASS_POINTS = {
+	Vector3.new(-4520.0, 236.6, -289.2),
+	Vector3.new(-4477.3, 236.6, -320.0),
+	Vector3.new(-4520.7, 236.6, -281.2),
+	Vector3.new(-4502.3, 236.6, -329.3),
+}
+
+local FAST_SPEED = 55
+local DRINK_DURATION = 8.0
+local EAT_MAX_PER_SPOT = 4.5
+
+local function getChar()
+	local char = player.Character
+	if not char or not char.Parent then
+		char = player.CharacterAdded:Wait()
+	end
+	local hrp = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("HumanoidRootPart", 5)
+	local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 5)
+	return char, hrp, hum
+end
+
+local function getStat(kind)
+	local keys = kind == "food"
+		and {"hunger", "food", "eat", "appetite", "stomach", "fullness", "nourish"}
+		or {"thirst", "water", "drink", "hydration"}
+
+	local function matchName(nm)
+		local l = string.lower(nm)
+		for _, k in ipairs(keys) do
+			if string.find(l, k, 1, true) then
+				return true
+			end
+		end
+		return false
+	end
+
+	local char = player.Character
+	local roots = {player, char}
+	for _, root in ipairs(roots) do
+		if root then
+			local okAttr, attrs = pcall(function() return root:GetAttributes() end)
+			if okAttr and attrs then
+				for attrName, attrVal in pairs(attrs) do
+					if typeof(attrVal) == "number" and matchName(attrName) then
+						return math.clamp(attrVal, 0, 100), true
+					end
+				end
+			end
+			for _, obj in ipairs(root:GetDescendants()) do
+				if (obj:IsA("NumberValue") or obj:IsA("IntValue")) and matchName(obj.Name) then
+					return math.clamp(obj.Value, 0, 100), true
+				end
+			end
+		end
+	end
+
+	return nil, false
+end
+
+local isLocked = false
+local targetLockCF = nil
+local lockConn = nil
+
+local function enforceLock()
+	if not isLocked or not targetLockCF then return end
+	local char, hrp, hum = getChar()
+	if not hrp or not hum then return end
+
+	pcall(function()
+		hum.WalkSpeed = 0
+		hum.JumpPower = 0
+		if hum.UseJumpPower == false then
+			hum.JumpHeight = 0
+		end
+		pcall(function()
+			hum:SetStateEnabled(Enum.HumanoidStateType.Swimming, false)
+		end)
+		if hum:GetState() == Enum.HumanoidStateType.Swimming then
+			hum:ChangeState(Enum.HumanoidStateType.Running)
+		end
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		hrp.AssemblyAngularVelocity = Vector3.zero
+		if char then
+			for _, part in ipairs(char:GetDescendants()) do
+				if part:IsA("BasePart") then
+					part.AssemblyLinearVelocity = Vector3.zero
+					part.AssemblyAngularVelocity = Vector3.zero
+				end
+			end
+		end
+		hrp.Anchored = true
+		hrp.CFrame = targetLockCF
+	end)
+end
+
+local function lockAtSpot(pos, lookAtPos)
+	local _, hrp, hum = getChar()
+	if not hrp or not hum then return end
+
+	pcall(function()
+		hum:MoveTo(hrp.Position)
+	end)
+
+	local basePos = pos or hrp.Position
+	if lookAtPos then
+		local flatLook = Vector3.new(lookAtPos.X, basePos.Y, lookAtPos.Z)
+		if (flatLook - basePos).Magnitude > 0.1 then
+			targetLockCF = CFrame.lookAt(basePos, flatLook)
+		else
+			targetLockCF = CFrame.new(basePos)
+		end
+	else
+		targetLockCF = CFrame.new(basePos)
+	end
+
+	isLocked = true
+	enforceLock()
+
+	if lockConn then
+		lockConn:Disconnect()
+		lockConn = nil
+	end
+
+	lockConn = RunService.Heartbeat:Connect(function()
+		if survivalEnabled and unlocked and isLocked then
+			enforceLock()
+		end
+	end)
+end
+
+local function unlockSpot()
+	isLocked = false
+	targetLockCF = nil
+
+	if lockConn then
+		lockConn:Disconnect()
+		lockConn = nil
+	end
+
+	local char, hrp, hum = getChar()
+	if not hrp or not hum then return end
+
+	pcall(function()
+		pcall(function()
+			hum:SetStateEnabled(Enum.HumanoidStateType.Swimming, true)
+		end)
+		if char then
+			for _, part in ipairs(char:GetDescendants()) do
+				if part:IsA("BasePart") then
+					part.Anchored = false
+				end
+			end
+		end
+		hrp.Anchored = false
+		hum.Sit = false
+		hum.PlatformStand = false
+		hum.WalkSpeed = FAST_SPEED
+		if hum.JumpPower < 35 then
+			hum.JumpPower = 50
+		end
+	end)
+end
+
+local function hasPromptText(patterns)
+	local _, hrp = getChar()
+	if not hrp then return false, nil end
+
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("ProximityPrompt") and obj.Enabled then
+			local txt = string.lower((obj.ActionText or "") .. " " .. (obj.ObjectText or ""))
+			local p = obj.Parent and obj.Parent:IsA("BasePart") and obj.Parent.Position
+			if p and (p - hrp.Position).Magnitude <= 22 then
+				for _, pat in ipairs(patterns) do
+					if string.find(txt, pat, 1, true) then
+						return true, p
+					end
+				end
+			end
+		end
+	end
+
+	local pg = player:FindFirstChildOfClass("PlayerGui")
+	if pg then
+		for _, guiObj in ipairs(pg:GetDescendants()) do
+			if guiObj:IsA("GuiObject") and guiObj.Visible then
+				local txt = ""
+				if guiObj:IsA("TextLabel") or guiObj:IsA("TextButton") then
+					txt = string.lower(guiObj.Text or "")
+				end
+				local nm = string.lower(guiObj.Name or "")
+				for _, pat in ipairs(patterns) do
+					if string.find(txt, pat, 1, true) or string.find(nm, pat, 1, true) then
+						return true, hrp.Position
+					end
+				end
+			end
+		end
+	end
+
+	return false, nil
+end
+
+local function isEatPromptVisible()
+	return hasPromptText({"eat", "graze", "food", "تناول", "الطعام", "أكل", "اكل"})
+end
+
+local function isStopEatingPromptVisible()
+	return hasPromptText({"stop eating", "للتوقف عن الأكل", "للتوقف عن الاكل"})
+end
+
+local function isDrinkPromptVisible()
+	return hasPromptText({"drink", "water", "شرب", "ماء"})
+end
+
+local function isStopDrinkingPromptVisible()
+	return hasPromptText({"stop drinking", "للتوقف عن الشرب"})
+end
+
+local function pressKeyEOnce()
+	pcall(function()
+		if VirtualInputManager then
+			VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+			task.wait(0.05)
+			VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+		end
+	end)
+end
+
+local function moveFastToPoint(targetPos, mode)
+	if isLocked then return false end
+	local _, hrp, hum = getChar()
+	if not hrp or not hum then return false end
+
+	local tStart = os.clock()
+	while survivalEnabled and unlocked and not isLocked do
+		local _, curHrp, curHum = getChar()
+		if not curHrp or not curHum then return false end
+
+		if mode == "food" and isEatPromptVisible() then
+			curHum:MoveTo(curHrp.Position)
+			return true
+		elseif mode == "water" and isDrinkPromptVisible() then
+			curHum:MoveTo(curHrp.Position)
+			return true
+		end
+
+		if mode == "food" then
+			local fVal, hasFood = getStat("food")
+			if hasFood and fVal >= 100 then
+				curHum:MoveTo(curHrp.Position)
+				return true
+			end
+		elseif mode == "water" then
+			local wVal, hasWater = getStat("water")
+			if hasWater and wVal >= 100 then
+				curHum:MoveTo(curHrp.Position)
+				return true
+			end
+		end
+
+		local flatGoal = Vector3.new(targetPos.X, curHrp.Position.Y, targetPos.Z)
+		local dist = (flatGoal - curHrp.Position).Magnitude
+		if dist <= 5.0 then
+			curHum:MoveTo(curHrp.Position)
+			return true
+		end
+
+		if (os.clock() - tStart) >= 7.5 then
+			curHum:MoveTo(curHrp.Position)
+			return true
+		end
+
+		pcall(function()
+			curHrp.Anchored = false
+			curHum.Sit = false
+			curHum.PlatformStand = false
+			curHum.WalkSpeed = FAST_SPEED
+			if dist > 0.3 then
+				local lookTarget = Vector3.new(flatGoal.X, curHrp.Position.Y, flatGoal.Z)
+				curHrp.CFrame = curHrp.CFrame:Lerp(CFrame.lookAt(curHrp.Position, lookTarget), 0.65)
+			end
+			curHum:MoveTo(targetPos)
+		end)
+
+		task.wait(0.07)
+	end
+
+	return false
+end
+
+local function runFoodUntil100()
+	local idx = 1
+	local cycles = 0
+
+	while survivalEnabled and unlocked do
+		unlockSpot()
+		local val, found = getStat("food")
+		if found and val >= 100 then
+			break
+		end
+		if cycles >= 8 then
+			break
+		end
+
+		local point = GRASS_POINTS[idx] or GRASS_POINTS[1]
+		idx = (idx % #GRASS_POINTS) + 1
+		cycles = cycles + 1
+
+		moveFastToPoint(point, "food")
+		if not (survivalEnabled and unlocked) then break end
+
+		if not isEatPromptVisible() and not isStopEatingPromptVisible() then
+			local _, curHrp = getChar()
+			if curHrp then
+				local nudge = curHrp.Position + Vector3.new(4, 0, -4)
+				moveFastToPoint(nudge, "food")
+			end
+		end
+
+		local _, stopHrp = getChar()
+		lockAtSpot(stopHrp and stopHrp.Position or point, point)
+
+		if isEatPromptVisible() and not isStopEatingPromptVisible() then
+			pressKeyEOnce()
+		end
+
+		local t0 = os.clock()
+		while survivalEnabled and unlocked do
+			enforceLock()
+
+			local curVal, hasStat = getStat("food")
+			if hasStat and curVal >= 100 then
+				if isStopEatingPromptVisible() then
+					pressKeyEOnce()
+				end
+				unlockSpot()
+				return
+			end
+
+			if (os.clock() - t0) >= EAT_MAX_PER_SPOT then
+				break
+			end
+
+			task.wait(0.15)
+		end
+
+		if isStopEatingPromptVisible() then
+			pressKeyEOnce()
+			task.wait(0.1)
+		end
+		unlockSpot()
+	end
+
+	unlockSpot()
+end
+
+local function runDrinkUntilDone()
+	local val, found = getStat("water")
+	if found and val >= 100 then
+		unlockSpot()
+		return
+	end
+
+	local _, hrp, hum = getChar()
+	local distToWater = hrp and (hrp.Position - WATER_POINT).Magnitude or 999
+	if distToWater > 5.5 then
+		unlockSpot()
+		moveFastToPoint(WATER_POINT, "water")
+		if not (survivalEnabled and unlocked) then return end
+	end
+
+	if not isDrinkPromptVisible() and not isStopDrinkingPromptVisible() then
+		local searchOffsets = {
+			WATER_POINT + Vector3.new(3.5, 0, 0),
+			WATER_POINT + Vector3.new(-3.5, 0, 0),
+			WATER_POINT + Vector3.new(0, 0, 3.5),
+		}
+		for _, sp in ipairs(searchOffsets) do
+			if not (survivalEnabled and unlocked) then return end
+			moveFastToPoint(sp, "water")
+			if isDrinkPromptVisible() or isStopDrinkingPromptVisible() then
+				break
+			end
+		end
+	end
+
+	_, hrp, hum = getChar()
+	lockAtSpot(hrp and hrp.Position or WATER_POINT, WATER_POINT)
+
+	if isDrinkPromptVisible() and not isStopDrinkingPromptVisible() then
+		pressKeyEOnce()
+	end
+
+	local tStart = os.clock()
+	local lastRetry = tStart
+	while survivalEnabled and unlocked do
+		enforceLock()
+
+		local curVal, hasStat = getStat("water")
+		if hasStat and curVal >= 100 then
+			break
+		end
+
+		if (os.clock() - tStart) >= DRINK_DURATION then
+			break
+		end
+
+		if (os.clock() - lastRetry) >= 2.5 then
+			lastRetry = os.clock()
+			if isDrinkPromptVisible() and not isStopDrinkingPromptVisible() then
+				pressKeyEOnce()
+			end
+		end
+
+		task.wait(0.1)
+	end
+
+	if isStopDrinkingPromptVisible() then
+		pressKeyEOnce()
+		task.wait(0.1)
+	end
+
+	unlockSpot()
+end
+
+local function buildUI()
+	local pg = player:FindFirstChildOfClass("PlayerGui") or player:WaitForChild("PlayerGui", 10)
+	if not pg then return end
+
+	local old = pg:FindFirstChild("SimbaCleanUI")
+	if old then old:Destroy() end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "SimbaCleanUI"
+	gui.ResetOnSpawn = false
+	pcall(function() gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling end)
+	gui.Parent = pg
+
+	local keyFrame = Instance.new("Frame")
+	keyFrame.Size = UDim2.new(0, 230, 0, 115)
+	keyFrame.Position = UDim2.new(0.03, 0, 0.38, 0)
+	keyFrame.BackgroundColor3 = Color3.fromRGB(22, 24, 28)
+	keyFrame.BorderSizePixel = 0
+	keyFrame.Parent = gui
+
+	local c1 = Instance.new("UICorner")
+	c1.CornerRadius = UDim.new(0, 10)
+	c1.Parent = keyFrame
+
+	local keyBox = Instance.new("TextBox")
+	keyBox.Size = UDim2.new(0.9, 0, 0, 36)
+	keyBox.Position = UDim2.new(0.05, 0, 0.12, 0)
+	keyBox.BackgroundColor3 = Color3.fromRGB(36, 39, 46)
+	keyBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+	keyBox.PlaceholderText = "أدخل المفتاح السري"
+	keyBox.Text = ""
+	keyBox.Font = Enum.Font.Gotham
+	keyBox.TextSize = 14
+	keyBox.ClearTextOnFocus = false
+	keyBox.Parent = keyFrame
+
+	local rawKey = ""
+	local syncing = false
+	keyBox:GetPropertyChangedSignal("Text"):Connect(function()
+		if syncing then return end
+		syncing = true
+		local txt = keyBox.Text
+		if #txt < #rawKey then
+			rawKey = string.sub(rawKey, 1, #txt)
+		elseif #txt > #rawKey then
+			local added = string.gsub(string.sub(txt, #rawKey + 1), "•", "")
+			rawKey = rawKey .. added
+		end
+		keyBox.Text = string.rep("•", #rawKey)
+		syncing = false
+	end)
+
+	local unlockBtn = Instance.new("TextButton")
+	unlockBtn.Size = UDim2.new(0.9, 0, 0, 36)
+	unlockBtn.Position = UDim2.new(0.05, 0, 0.56, 0)
+	unlockBtn.BackgroundColor3 = Color3.fromRGB(45, 120, 210)
+	unlockBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	unlockBtn.Font = Enum.Font.GothamBold
+	unlockBtn.TextSize = 14
+	unlockBtn.Text = "تأكيد المفتاح"
+	unlockBtn.Parent = keyFrame
+
+	local mainFrame = Instance.new("Frame")
+	mainFrame.Size = UDim2.new(0, 220, 0, 96)
+	mainFrame.Position = UDim2.new(0.03, 0, 0.38, 0)
+	mainFrame.BackgroundColor3 = Color3.fromRGB(22, 24, 28)
+	mainFrame.BorderSizePixel = 0
+	mainFrame.Visible = false
+	mainFrame.Parent = gui
+
+	local c2 = Instance.new("UICorner")
+	c2.CornerRadius = UDim.new(0, 10)
+	c2.Parent = mainFrame
+
+	local enableBtn = Instance.new("TextButton")
+	enableBtn.Size = UDim2.new(0.9, 0, 0, 36)
+	enableBtn.Position = UDim2.new(0.05, 0, 0.1, 0)
+	enableBtn.BackgroundColor3 = Color3.fromRGB(35, 155, 90)
+	enableBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	enableBtn.Font = Enum.Font.GothamBold
+	enableBtn.TextSize = 14
+	enableBtn.Text = "تفعيل البقاء"
+	enableBtn.Parent = mainFrame
+
+	local disableBtn = Instance.new("TextButton")
+	disableBtn.Size = UDim2.new(0.9, 0, 0, 36)
+	disableBtn.Position = UDim2.new(0.05, 0, 0.54, 0)
+	disableBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+	disableBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	disableBtn.Font = Enum.Font.GothamBold
+	disableBtn.TextSize = 14
+	disableBtn.Text = "تقفيل البقاء"
+	disableBtn.Parent = mainFrame
+
+	unlockBtn.MouseButton1Click:Connect(function()
+		local cleaned = string.upper((rawKey:gsub("%s+", "")))
+		if cleaned == SECRET_KEY then
+			unlocked = true
+			keyFrame.Visible = false
+			mainFrame.Visible = true
+		else
+			rawKey = ""
+			syncing = true
+			keyBox.Text = ""
+			syncing = false
+			keyBox.PlaceholderText = "المفتاح غير صحيح"
+		end
+	end)
+
+	enableBtn.MouseButton1Click:Connect(function()
+		if not unlocked then return end
+		survivalEnabled = true
+		enableBtn.BackgroundColor3 = Color3.fromRGB(55, 205, 120)
+	end)
+
+	disableBtn.MouseButton1Click:Connect(function()
+		survivalEnabled = false
+		enableBtn.BackgroundColor3 = Color3.fromRGB(35, 155, 90)
+		unlockSpot()
+	end)
+end
+
+pcall(buildUI)
+
+task.spawn(function()
+	while true do
+		task.wait(0.25)
+		if unlocked and survivalEnabled then
+			pcall(runFoodUntil100)
+			pcall(unlockSpot)
+			if not (unlocked and survivalEnabled) then continue end
+
+			pcall(runDrinkUntilDone)
+			pcall(unlockSpot)
+			if not (unlocked and survivalEnabled) then continue end
+
+			pcall(moveFastToPoint, GRASS_POINTS[1], "food")
+			pcall(unlockSpot)
+		end
+	end
+end)
