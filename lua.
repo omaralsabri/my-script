@@ -1,4 +1,4 @@
--- Savannah Life | Simba Falls Smart Stop & Search Loop (Food <-> Water)
+-- Savannah Life | Simba Falls Coordinate-Guided Loop (Grass -> 100 -> Water -> 100 -> Grass)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
@@ -16,10 +16,6 @@ local GRASS_POINTS = {
 	Vector3.new(-4502.3, 236.6, -329.3),
 }
 
-local FAST_SPEED = 55
-local DRINK_DURATION = 8.0
-local EAT_MAX_PER_SPOT = 4.5
-
 local function getChar()
 	local char = player.Character
 	if not char or not char.Parent then
@@ -30,7 +26,7 @@ local function getChar()
 	return char, hrp, hum
 end
 
-local function getStat(kind)
+local function getStat(kind) -- "food" أو "water"
 	local keys = kind == "food"
 		and {"hunger", "food", "eat", "appetite", "stomach", "fullness", "nourish"}
 		or {"thirst", "water", "drink", "hydration"}
@@ -68,6 +64,7 @@ local function getStat(kind)
 	return nil, false
 end
 
+local FAST_SPEED = 55
 local isLocked = false
 local targetLockCF = nil
 local lockConn = nil
@@ -83,12 +80,6 @@ local function enforceLock()
 		if hum.UseJumpPower == false then
 			hum.JumpHeight = 0
 		end
-		pcall(function()
-			hum:SetStateEnabled(Enum.HumanoidStateType.Swimming, false)
-		end)
-		if hum:GetState() == Enum.HumanoidStateType.Swimming then
-			hum:ChangeState(Enum.HumanoidStateType.Running)
-		end
 		hrp.AssemblyLinearVelocity = Vector3.zero
 		hrp.AssemblyAngularVelocity = Vector3.zero
 		if char then
@@ -100,17 +91,15 @@ local function enforceLock()
 			end
 		end
 		hrp.Anchored = true
-		hrp.CFrame = targetLockCF
+		if (hrp.Position - targetLockCF.Position).Magnitude > 0.02 or hrp.CFrame.LookVector:Dot(targetLockCF.LookVector) < 0.998 then
+			hrp.CFrame = targetLockCF
+		end
 	end)
 end
 
 local function lockAtSpot(pos, lookAtPos)
 	local _, hrp, hum = getChar()
 	if not hrp or not hum then return end
-
-	pcall(function()
-		hum:MoveTo(hrp.Position)
-	end)
 
 	local basePos = pos or hrp.Position
 	if lookAtPos then
@@ -152,9 +141,6 @@ local function unlockSpot()
 	if not hrp or not hum then return end
 
 	pcall(function()
-		pcall(function()
-			hum:SetStateEnabled(Enum.HumanoidStateType.Swimming, true)
-		end)
 		if char then
 			for _, part in ipairs(char:GetDescendants()) do
 				if part:IsA("BasePart") then
@@ -238,7 +224,7 @@ local function pressKeyEOnce()
 end
 
 local function moveFastToPoint(targetPos, mode)
-	if isLocked then return false end
+	unlockSpot()
 	local _, hrp, hum = getChar()
 	if not hrp or not hum then return false end
 
@@ -246,14 +232,6 @@ local function moveFastToPoint(targetPos, mode)
 	while survivalEnabled and unlocked and not isLocked do
 		local _, curHrp, curHum = getChar()
 		if not curHrp or not curHum then return false end
-
-		if mode == "food" and isEatPromptVisible() then
-			curHum:MoveTo(curHrp.Position)
-			return true
-		elseif mode == "water" and isDrinkPromptVisible() then
-			curHum:MoveTo(curHrp.Position)
-			return true
-		end
 
 		if mode == "food" then
 			local fVal, hasFood = getStat("food")
@@ -271,12 +249,12 @@ local function moveFastToPoint(targetPos, mode)
 
 		local flatGoal = Vector3.new(targetPos.X, curHrp.Position.Y, targetPos.Z)
 		local dist = (flatGoal - curHrp.Position).Magnitude
-		if dist <= 5.0 then
+		if dist <= 5.5 then
 			curHum:MoveTo(curHrp.Position)
 			return true
 		end
 
-		if (os.clock() - tStart) >= 7.5 then
+		if (os.clock() - tStart) >= 8.0 then
 			curHum:MoveTo(curHrp.Position)
 			return true
 		end
@@ -309,7 +287,7 @@ local function runFoodUntil100()
 		if found and val >= 100 then
 			break
 		end
-		if cycles >= 8 then
+		if cycles >= 16 then
 			break
 		end
 
@@ -320,17 +298,13 @@ local function runFoodUntil100()
 		moveFastToPoint(point, "food")
 		if not (survivalEnabled and unlocked) then break end
 
-		if not isEatPromptVisible() and not isStopEatingPromptVisible() then
-			local _, curHrp = getChar()
-			if curHrp then
-				local nudge = curHrp.Position + Vector3.new(4, 0, -4)
-				moveFastToPoint(nudge, "food")
-			end
+		local afterMoveVal, afterMoveFound = getStat("food")
+		if afterMoveFound and afterMoveVal >= 100 then
+			break
 		end
 
 		local _, stopHrp = getChar()
 		lockAtSpot(stopHrp and stopHrp.Position or point, point)
-
 		if isEatPromptVisible() and not isStopEatingPromptVisible() then
 			pressKeyEOnce()
 		end
@@ -338,97 +312,69 @@ local function runFoodUntil100()
 		local t0 = os.clock()
 		while survivalEnabled and unlocked do
 			enforceLock()
-
 			local curVal, hasStat = getStat("food")
 			if hasStat and curVal >= 100 then
-				if isStopEatingPromptVisible() then
-					pressKeyEOnce()
-				end
 				unlockSpot()
 				return
 			end
 
-			if (os.clock() - t0) >= EAT_MAX_PER_SPOT then
+			if (os.clock() - t0) >= 4.0 then
 				break
 			end
 
 			task.wait(0.15)
 		end
 
-		if isStopEatingPromptVisible() then
-			pressKeyEOnce()
-			task.wait(0.1)
-		end
 		unlockSpot()
 	end
 
 	unlockSpot()
 end
 
-local function runDrinkUntilDone()
-	local val, found = getStat("water")
-	if found and val >= 100 then
-		unlockSpot()
-		return
-	end
+local function runDrinkUntil100()
+	local tOverall = os.clock()
 
-	local _, hrp, hum = getChar()
-	local distToWater = hrp and (hrp.Position - WATER_POINT).Magnitude or 999
-	if distToWater > 5.5 then
-		unlockSpot()
-		moveFastToPoint(WATER_POINT, "water")
-		if not (survivalEnabled and unlocked) then return end
-	end
+	while survivalEnabled and unlocked do
+		local val, found = getStat("water")
+		if found and val >= 100 then
+			unlockSpot()
+			return
+		end
 
-	if not isDrinkPromptVisible() and not isStopDrinkingPromptVisible() then
-		local searchOffsets = {
-			WATER_POINT + Vector3.new(3.5, 0, 0),
-			WATER_POINT + Vector3.new(-3.5, 0, 0),
-			WATER_POINT + Vector3.new(0, 0, 3.5),
-		}
-		for _, sp in ipairs(searchOffsets) do
-			if not (survivalEnabled and unlocked) then return end
-			moveFastToPoint(sp, "water")
-			if isDrinkPromptVisible() or isStopDrinkingPromptVisible() then
+		local _, hrp = getChar()
+		local distToWater = hrp and (hrp.Position - WATER_POINT).Magnitude or 999
+
+		if distToWater > 6.5 then
+			unlockSpot()
+			moveFastToPoint(WATER_POINT, "water")
+			if not (survivalEnabled and unlocked) then break end
+		end
+
+		local _, stopHrp = getChar()
+		lockAtSpot(stopHrp and stopHrp.Position or WATER_POINT, WATER_POINT)
+		if isDrinkPromptVisible() and not isStopDrinkingPromptVisible() then
+			pressKeyEOnce()
+		end
+
+		local tSeg = os.clock()
+		while survivalEnabled and unlocked do
+			enforceLock()
+			local curVal, hasStat = getStat("water")
+			if hasStat and curVal >= 100 then
+				unlockSpot()
+				return
+			end
+
+			if (os.clock() - tSeg) >= 3.5 then
 				break
 			end
+
+			task.wait(0.15)
 		end
-	end
 
-	_, hrp, hum = getChar()
-	lockAtSpot(hrp and hrp.Position or WATER_POINT, WATER_POINT)
-
-	if isDrinkPromptVisible() and not isStopDrinkingPromptVisible() then
-		pressKeyEOnce()
-	end
-
-	local tStart = os.clock()
-	local lastRetry = tStart
-	while survivalEnabled and unlocked do
-		enforceLock()
-
-		local curVal, hasStat = getStat("water")
-		if hasStat and curVal >= 100 then
+		if (os.clock() - tOverall) >= 45.0 then
 			break
 		end
-
-		if (os.clock() - tStart) >= DRINK_DURATION then
-			break
-		end
-
-		if (os.clock() - lastRetry) >= 2.5 then
-			lastRetry = os.clock()
-			if isDrinkPromptVisible() and not isStopDrinkingPromptVisible() then
-				pressKeyEOnce()
-			end
-		end
-
-		task.wait(0.1)
-	end
-
-	if isStopDrinkingPromptVisible() then
-		pressKeyEOnce()
-		task.wait(0.1)
 	end
 
 	unlockSpot()
@@ -566,11 +512,7 @@ task.spawn(function()
 			pcall(unlockSpot)
 			if not (unlocked and survivalEnabled) then continue end
 
-			pcall(runDrinkUntilDone)
-			pcall(unlockSpot)
-			if not (unlocked and survivalEnabled) then continue end
-
-			pcall(moveFastToPoint, GRASS_POINTS[1], "food")
+			pcall(runDrinkUntil100)
 			pcall(unlockSpot)
 		end
 	end
